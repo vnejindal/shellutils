@@ -1,0 +1,2 @@
+1. Find difference between output of two lines: 
+sudo vmq-admin metrics show | grep -e publish_sent -e publish_rec | awk {'print $3'} | paste -s -d- | bc
