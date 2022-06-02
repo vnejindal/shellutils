@@ -42,6 +42,7 @@ PG_INCLUDE_DIR=""
 
 ### System variables ###
 #for ubuntu and debian user non-interativeness 
+PG_SQL_INSTALLER_VERSION=1.0
 export DEBIAN_FRONTEND=noninteractive
 
 if [[ $EUID -ne 0 ]]; then
@@ -56,7 +57,7 @@ function logit()
 }
 showHelp()
 {
-	logit "Installation : sudo ./pg_install.sh"
+	logit "Installation : sudo ./pg_install.sh -install"
 	logit "Uninstallation : sudo ./pg_install.sh -uninstall"
 
 	exit 0
@@ -117,6 +118,17 @@ install_pgsql_rhel()
 install_pgsql_debian()
 {
 	logit "installing on debian "
+	apt install postgresql -y
+	apt install postgresql-contrib -y
+
+	if [ $? == 0 ]; then 
+		logit "apt install successful"
+		#postgresql-setup --initdb   #not needed in ubuntu
+		echo "postgres:$PGSQL_PASSWORD" | chpasswd
+		systemctl enable postgresql
+    fi
+	 
+	logit `dpkg --status postgresql` 
 }
 
 install()
@@ -127,6 +139,10 @@ install()
 	
 	if [ "$OSNAME" == "Red Hat Enterprise Linux" ]; then
 		install_pgsql_rhel
+	fi
+	
+	if [ "$OSNAME" == "Debian GNU/Linux" ]; then 
+		install_pgsql_debian
 	fi
 
 }
@@ -157,7 +173,7 @@ uninstall_pgsql_rhel()
 uninstall_pgsql_debian()
 {
 	logit "uninstalling pgsql on debian"
-
+	uninstall_pgsql_ubuntu
 }
 
 
@@ -175,6 +191,9 @@ uninstall()
 		uninstall_pgsql_rhel
 	fi
 	
+	if [ "$OSNAME" == "Debian GNU/Linux" ]; then 
+		uninstall_pgsql_debian
+	fi
 	exit 0
 
 }
@@ -191,20 +210,21 @@ check_os_ver()
 	logit "OS Name: $OSNAME"
 	logit "OS Version: $OSVER"
 	logit "Date:  `date`"
-	if [ "$OSNAME" != "Red Hat Enterprise Linux" ] && [ "$OSNAME" != "Ubuntu" ]; then
+	if [ "$OSNAME" != "Red Hat Enterprise Linux" ] && [ "$OSNAME" != "Ubuntu" ] && [ "$OSNAME" != "Debian GNU/Linux" ]; then
 		echo "$OSNAME not supported" 
 		exit 1
 	fi
-	if [ $OSVER -ne 8 ] && [ $OSVER -ne 22 ]; then
+	if [ $OSVER -ne 8 ] && [ $OSVER -ne 22 ] && [ $OSVER -ne 11 ]; then
 		echo "$OSVER not supported" 
 		exit 1
 	fi
 
 }
 
+logit "Script Installer version: $PG_SQL_INSTALLER_VERSION"
 check_os_ver
 
-set -x
+#set -x
 
 
 while [ -n "$1" ]; do
@@ -215,6 +235,8 @@ case $1 in
 	-uninstall|-u|uninstall)
 		uninstall
 		;;
+	-install|-i|install)
+		;;	
 	*)
 		showHelp
 		;;
@@ -327,11 +349,11 @@ update_os_vars()
 		update_os_var_ubuntu
 	fi
 
-	if [ "$OSNAME" == "Debian" ]; then
+	if [ "$OSNAME" == "Debian GNU/Linux" ]; then
 		update_os_var_debian
 	fi
 	
-	if [ "$OSNAME" != "Red Hat Enterprise Linux" ]; then
+	if [ "$OSNAME" == "Red Hat Enterprise Linux" ]; then
 		update_os_var_rhel
 	fi
 	
@@ -409,6 +431,67 @@ update_os_var_ubuntu()
 update_os_var_debian()
 {
    logit "updating debian vars"
+   
+   	PG_CONF_PATH=/etc/postgresql/13/main
+	PG_DATA_DIR=/var/lib/postgresql/13/main
+	PG_HBA_FILE=/etc/postgresql/13/main/pg_hba.conf
+	PG_IDENT_FILE=/etc/postgresql/13/main/pg_ident.conf
+	PG_EXTERNAL_PID_FILE=/var/run/postgresql/13-main.pid
+	PG_CLUSTER_NAME=13/main
+	PG_STATS_TEMP_DIR=/var/run/postgresql/13-main.pg_stat_tmp
+	PG_INCLUDE_DIR=conf.d
+	
+	#Uncomment lines from config
+	sed '/@CONFIG_DATA_DIR@/s/^#//g' $TMP_PGSQL_CONFIG > $TMPFILE
+	mv $TMPFILE $TMP_PGSQL_CONFIG > /dev/null 2>&1
+	
+	sed '/@CONFIG_HBA_FILE@/s/^#//g' $TMP_PGSQL_CONFIG > $TMPFILE
+	mv $TMPFILE $TMP_PGSQL_CONFIG > /dev/null 2>&1
+	
+	sed '/@CONFIG_IDENT_FILE@/s/^#//g' $TMP_PGSQL_CONFIG > $TMPFILE
+	mv $TMPFILE $TMP_PGSQL_CONFIG > /dev/null 2>&1
+	
+	sed '/@CONFIG_EXTERNAL_PID_FILE@/s/^#//g' $TMP_PGSQL_CONFIG > $TMPFILE
+	mv $TMPFILE $TMP_PGSQL_CONFIG > /dev/null 2>&1
+	
+	sed '/@CONFIG_CLUSTER_NAME@/s/^#//g' $TMP_PGSQL_CONFIG > $TMPFILE
+	mv $TMPFILE $TMP_PGSQL_CONFIG > /dev/null 2>&1
+	
+	sed '/@CONFIG_STATS_TEMP_DIR@/s/^#//g' $TMP_PGSQL_CONFIG > $TMPFILE
+	mv $TMPFILE $TMP_PGSQL_CONFIG > /dev/null 2>&1
+	
+	sed '/@CONFIG_INCLUDE_DIR@/s/^#//g' $TMP_PGSQL_CONFIG > $TMPFILE
+	mv $TMPFILE $TMP_PGSQL_CONFIG > /dev/null 2>&1
+	
+	
+	#start updating the values
+	REGEX="s|@CONFIG_DATA_DIR@|$PG_DATA_DIR|"
+	sed "$REGEX" $TMP_PGSQL_CONFIG > $TMPFILE
+	mv $TMPFILE $TMP_PGSQL_CONFIG > /dev/null 2>&1
+	
+	REGEX="s|@CONFIG_HBA_FILE@|$PG_HBA_FILE|"
+	sed "$REGEX" $TMP_PGSQL_CONFIG > $TMPFILE
+	mv $TMPFILE $TMP_PGSQL_CONFIG > /dev/null 2>&1
+	
+	REGEX="s|@CONFIG_IDENT_FILE@|$PG_IDENT_FILE|"
+	sed "$REGEX" $TMP_PGSQL_CONFIG > $TMPFILE
+	mv $TMPFILE $TMP_PGSQL_CONFIG > /dev/null 2>&1
+	
+	REGEX="s|@CONFIG_EXTERNAL_PID_FILE@|$PG_EXTERNAL_PID_FILE|"
+	sed "$REGEX" $TMP_PGSQL_CONFIG > $TMPFILE
+	mv $TMPFILE $TMP_PGSQL_CONFIG > /dev/null 2>&1
+	
+	REGEX="s|@CONFIG_CLUSTER_NAME@|$PG_CLUSTER_NAME|"
+	sed "$REGEX" $TMP_PGSQL_CONFIG > $TMPFILE
+	mv $TMPFILE $TMP_PGSQL_CONFIG > /dev/null 2>&1
+	
+	REGEX="s|@CONFIG_STATS_TEMP_DIR@|$PG_STATS_TEMP_DIR|"
+	sed "$REGEX" $TMP_PGSQL_CONFIG > $TMPFILE
+	mv $TMPFILE $TMP_PGSQL_CONFIG > /dev/null 2>&1
+	
+	REGEX="s|@CONFIG_INCLUDE_DIR@|$PG_INCLUDE_DIR|"
+	sed "$REGEX" $TMP_PGSQL_CONFIG > $TMPFILE
+	mv $TMPFILE $TMP_PGSQL_CONFIG > /dev/null 2>&1
 }
 
 update_os_var_rhel()
