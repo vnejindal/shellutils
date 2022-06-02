@@ -4,11 +4,16 @@
 # This script installs postgres sql server on RHEL 8(for now) 
 # and configures it to use performance optimized config
 
+#vne:tbd: 
+# 1. operation - uninstall 
+# 2.    log pg install version 
+# 3. log all activites in log file 
+# 4. check if pgsql already installed 
 
 ## Configurable Parameters 
 PGSQL_IP_ADDRESS="*"
 PGSQL_PORT="5432"
-PGSQL_PASSWORD="abc123"
+PGSQL_PASSWORD="AD@Password"
 PGSQL_HBA_ACCESS_IP="192.168.84.132"
 PGSQL_HBA_ACCESS_SUBNET="24"
 
@@ -20,6 +25,24 @@ TMPFILE=/tmp/pgsql.tmp
 OSNAME=`cat /etc/os-release | grep ^NAME | cut -d\" -f2`
 OSVER=`cat /etc/os-release | grep VERSION_ID | cut -d\" -f2 | cut -d. -f1`
 PG_CONF_PATH=/var/lib/pgsql/data
+#data_directory
+PG_DATA_DIR=""
+#hba_file
+PG_HBA_FILE=""
+#ident_file
+PG_IDENT_FILE=""
+#external_pid_file
+PG_EXTERNAL_PID_FILE=""
+#cluster_name 
+PG_CLUSTER_NAME=""
+#stats_temp_directory
+PG_STATS_TEMP_DIR=""
+#include_dir
+PG_INCLUDE_DIR=""
+
+### System variables ###
+#for ubuntu and debian user non-interativeness 
+export DEBIAN_FRONTEND=noninteractive
 
 if [[ $EUID -ne 0 ]]; then
    echo "This script must be run as root" 
@@ -33,7 +56,9 @@ function logit()
 }
 showHelp()
 {
-	logit "sudo ./pg_install.sh install | uninstall"
+	logit "Installation : sudo ./pg_install.sh"
+	logit "Uninstallation : sudo ./pg_install.sh -uninstall"
+
 	exit 0
 }
 
@@ -57,34 +82,99 @@ restart_pgsql()
        systemctl restart postgresql.service 
 }
 
-install()
+install_pgsql_ubuntu()
+{
+	apt install postgresql -y
+	apt install postgresql-contrib -y
+
+	if [ $? == 0 ]; then 
+		logit "apt install successful"
+		#postgresql-setup --initdb   #not needed in ubuntu
+		echo "postgres:$PGSQL_PASSWORD" | chpasswd
+		systemctl enable postgresql
+    fi
+	 
+	logit `dpkg --status postgresql` 
+
+}
+
+install_pgsql_rhel()
 {
 #	yum update -y
+		 
 	yum install @postgresql:13 -y
-        yum install postgresql-contrib -y
+	yum install postgresql-contrib -y
 
-	#vne::tbd::check the yum return error code
 	if [ $? == 0 ]; then 
 		logit "yum install successful"
 		postgresql-setup --initdb
 		echo -e "$PGSQL_PASSWORD\n$PGSQL_PASSORD" | (passwd --stdin postgres)
 		systemctl enable postgresql
-        fi
+    fi
 
 }
 
-uninstall()
+install_pgsql_debian()
 {
-	echo "===================" >> $LOGFILE
-	logit "Uninstalling postgress-sql:"
-	date >> $LOGFILE
+	logit "installing on debian "
+}
 
+install()
+{
+	if [ "$OSNAME" == "Ubuntu" ]; then 
+		install_pgsql_ubuntu
+	fi
+	
+	if [ "$OSNAME" == "Red Hat Enterprise Linux" ]; then
+		install_pgsql_rhel
+	fi
+
+}
+
+uninstall_pgsql_ubuntu()
+{
+	logit "uninstalling pgsql on ubuntu"
+	sudo apt remove --purge postgresql*  -y
+	sudo deluser postgres
+	sudo rm -rf /var/lib/postgresql/
+	sudo rm -rf /var/log/postgresql
+	sudo rm -rf /etc/postgresql/
+
+}
+
+uninstall_pgsql_rhel()
+{
+	
+	logit "uninstalling pgsql on rhel"
 	stop_pgsql
 	rpm -qa | grep postgres
 	yum list installed | grep postgres
 
 	yum remove postgres\* -y
 	rm -rf /var/lib/pgsql
+}
+
+uninstall_pgsql_debian()
+{
+	logit "uninstalling pgsql on debian"
+
+}
+
+
+uninstall()
+{
+	echo "===================" >> $LOGFILE
+	logit "Uninstalling postgress-sql:"
+	date >> $LOGFILE
+	
+	if [ "$OSNAME" == "Ubuntu" ]; then 
+		uninstall_pgsql_ubuntu
+	fi
+	
+	if [ "$OSNAME" == "Red Hat Enterprise Linux" ]; then
+		uninstall_pgsql_rhel
+	fi
+	
 	exit 0
 
 }
@@ -96,24 +186,37 @@ if [ "$#" -eq 0 ]; then
 fi
 
 
-if [ "$OSNAME" != "Red Hat Enterprise Linux" ]; then
-   echo "$OSNAME not supported" 
-   exit 1
-fi
-if [ $OSVER -ne 8 ]; then
-   echo "$OSVER not supported" 
-   exit 1
-fi
+check_os_ver()
+{	
+	logit "OS Name: $OSNAME"
+	logit "OS Version: $OSVER"
+	logit "Date:  `date`"
+	if [ "$OSNAME" != "Red Hat Enterprise Linux" ] && [ "$OSNAME" != "Ubuntu" ]; then
+		echo "$OSNAME not supported" 
+		exit 1
+	fi
+	if [ $OSVER -ne 8 ] && [ $OSVER -ne 22 ]; then
+		echo "$OSVER not supported" 
+		exit 1
+	fi
+
+}
+
+check_os_ver
 
 set -x
+
 
 while [ -n "$1" ]; do
 case $1 in
 	-h|/?)
 		showHelp
 		;;
-	-uninstall|-u)
+	-uninstall|-u|uninstall)
 		uninstall
+		;;
+	*)
+		showHelp
 		;;
 esac 
 shift
@@ -205,9 +308,7 @@ update_pg_config()
 	sed "$REGEX" $TMP_PGSQL_CONFIG > $TMPFILE
 	mv $TMPFILE $TMP_PGSQL_CONFIG > /dev/null 2>&1
 
-	#Copy this config to original 
-	cp $PG_CONF_PATH/postgresql.conf $PG_CONF_PATH/postgresql.conf.orig
-	cp $TMP_PGSQL_CONFIG $PG_CONF_PATH/postgresql.conf 
+
 }
 
 update_pg_hba()
@@ -219,9 +320,106 @@ update_pg_hba()
    echo $ACCESS_LINE >> $HBA_FILE
 }
 
+update_os_vars()
+{
+	update_pg_config
+	if [ "$OSNAME" == "Ubuntu" ]; then
+		update_os_var_ubuntu
+	fi
+
+	if [ "$OSNAME" == "Debian" ]; then
+		update_os_var_debian
+	fi
+	
+	if [ "$OSNAME" != "Red Hat Enterprise Linux" ]; then
+		update_os_var_rhel
+	fi
+	
+	#Copy this config to original 
+	cp $PG_CONF_PATH/postgresql.conf $PG_CONF_PATH/postgresql.conf.orig
+	cp $TMP_PGSQL_CONFIG $PG_CONF_PATH/postgresql.conf 
+
+}
+
+update_os_var_ubuntu()
+{
+	PG_CONF_PATH=/etc/postgresql/14/main
+	PG_DATA_DIR=/var/lib/postgresql/14/main
+	PG_HBA_FILE=/etc/postgresql/14/main/pg_hba.conf
+	PG_IDENT_FILE=/etc/postgresql/14/main/pg_ident.conf
+	PG_EXTERNAL_PID_FILE=/var/run/postgresql/14-main.pid
+	PG_CLUSTER_NAME=14/main
+	PG_STATS_TEMP_DIR=/var/run/postgresql/14-main.pg_stat_tmp
+	PG_INCLUDE_DIR=conf.d
+	
+	#Uncomment lines from config
+	sed '/@CONFIG_DATA_DIR@/s/^#//g' $TMP_PGSQL_CONFIG > $TMPFILE
+	mv $TMPFILE $TMP_PGSQL_CONFIG > /dev/null 2>&1
+	
+	sed '/@CONFIG_HBA_FILE@/s/^#//g' $TMP_PGSQL_CONFIG > $TMPFILE
+	mv $TMPFILE $TMP_PGSQL_CONFIG > /dev/null 2>&1
+	
+	sed '/@CONFIG_IDENT_FILE@/s/^#//g' $TMP_PGSQL_CONFIG > $TMPFILE
+	mv $TMPFILE $TMP_PGSQL_CONFIG > /dev/null 2>&1
+	
+	sed '/@CONFIG_EXTERNAL_PID_FILE@/s/^#//g' $TMP_PGSQL_CONFIG > $TMPFILE
+	mv $TMPFILE $TMP_PGSQL_CONFIG > /dev/null 2>&1
+	
+	sed '/@CONFIG_CLUSTER_NAME@/s/^#//g' $TMP_PGSQL_CONFIG > $TMPFILE
+	mv $TMPFILE $TMP_PGSQL_CONFIG > /dev/null 2>&1
+	
+	sed '/@CONFIG_STATS_TEMP_DIR@/s/^#//g' $TMP_PGSQL_CONFIG > $TMPFILE
+	mv $TMPFILE $TMP_PGSQL_CONFIG > /dev/null 2>&1
+	
+	sed '/@CONFIG_INCLUDE_DIR@/s/^#//g' $TMP_PGSQL_CONFIG > $TMPFILE
+	mv $TMPFILE $TMP_PGSQL_CONFIG > /dev/null 2>&1
+	
+	
+	#start updating the values
+	REGEX="s|@CONFIG_DATA_DIR@|$PG_DATA_DIR|"
+	sed "$REGEX" $TMP_PGSQL_CONFIG > $TMPFILE
+	mv $TMPFILE $TMP_PGSQL_CONFIG > /dev/null 2>&1
+	
+	REGEX="s|@CONFIG_HBA_FILE@|$PG_HBA_FILE|"
+	sed "$REGEX" $TMP_PGSQL_CONFIG > $TMPFILE
+	mv $TMPFILE $TMP_PGSQL_CONFIG > /dev/null 2>&1
+	
+	REGEX="s|@CONFIG_IDENT_FILE@|$PG_IDENT_FILE|"
+	sed "$REGEX" $TMP_PGSQL_CONFIG > $TMPFILE
+	mv $TMPFILE $TMP_PGSQL_CONFIG > /dev/null 2>&1
+	
+	REGEX="s|@CONFIG_EXTERNAL_PID_FILE@|$PG_EXTERNAL_PID_FILE|"
+	sed "$REGEX" $TMP_PGSQL_CONFIG > $TMPFILE
+	mv $TMPFILE $TMP_PGSQL_CONFIG > /dev/null 2>&1
+	
+	REGEX="s|@CONFIG_CLUSTER_NAME@|$PG_CLUSTER_NAME|"
+	sed "$REGEX" $TMP_PGSQL_CONFIG > $TMPFILE
+	mv $TMPFILE $TMP_PGSQL_CONFIG > /dev/null 2>&1
+	
+	REGEX="s|@CONFIG_STATS_TEMP_DIR@|$PG_STATS_TEMP_DIR|"
+	sed "$REGEX" $TMP_PGSQL_CONFIG > $TMPFILE
+	mv $TMPFILE $TMP_PGSQL_CONFIG > /dev/null 2>&1
+	
+	REGEX="s|@CONFIG_INCLUDE_DIR@|$PG_INCLUDE_DIR|"
+	sed "$REGEX" $TMP_PGSQL_CONFIG > $TMPFILE
+	mv $TMPFILE $TMP_PGSQL_CONFIG > /dev/null 2>&1
+	
+}
+
+update_os_var_debian()
+{
+   logit "updating debian vars"
+}
+
+update_os_var_rhel()
+{
+	logit "updating rhel vars"
+
+}
+
 install
 create_pg_config
-update_pg_config
+update_os_vars
 update_pg_hba
 restart_pgsql
 
@@ -272,15 +470,15 @@ __PG_CONFIG_FOLLOWS__
 # The default values of these variables are driven from the -D command-line
 # option or PGDATA environment variable, represented here as ConfigDir.
 
-#data_directory = 'ConfigDir'		# use data in another directory
+#data_directory = '@CONFIG_DATA_DIR@'		# use data in another directory
 					# (change requires restart)
-#hba_file = 'ConfigDir/pg_hba.conf'	# host-based authentication file
+#hba_file = '@CONFIG_HBA_FILE@'	# host-based authentication file
 					# (change requires restart)
-#ident_file = 'ConfigDir/pg_ident.conf'	# ident configuration file
+#ident_file = '@CONFIG_IDENT_FILE@'	# ident configuration file
 					# (change requires restart)
 
 # If external_pid_file is not explicitly set, no extra PID file is written.
-#external_pid_file = ''			# write an extra PID file
+#external_pid_file = '@CONFIG_EXTERNAL_PID_FILE@'			# write an extra PID file
 					# (change requires restart)
 
 
@@ -800,7 +998,7 @@ log_timezone = 'UTC'
 # PROCESS TITLE
 #------------------------------------------------------------------------------
 
-#cluster_name = ''			# added to process titles if nonempty
+#cluster_name = '@CONFIG_CLUSTER_NAME@'			# added to process titles if nonempty
 					# (change requires restart)
 #update_process_title = on
 
@@ -816,8 +1014,7 @@ log_timezone = 'UTC'
 #track_io_timing = off
 #track_functions = none			# none, pl, all
 #track_activity_query_size = 1024	# (change requires restart)
-#stats_temp_directory = 'pg_stat_tmp'
-
+#stats_temp_directory = '@CONFIG_STATS_TEMP_DIR@'
 
 # - Monitoring -
 
@@ -911,7 +1108,7 @@ log_timezone = 'UTC'
 
 datestyle = 'iso, mdy'
 #intervalstyle = 'postgres'
-timezone = 'America/Los_Angeles'
+timezone = 'Etc/UTC'
 #timezone_abbreviations = 'Default'     # Select the set of available time zone
 					# abbreviations.  Currently, there are
 					#   Default
@@ -1000,7 +1197,8 @@ default_text_search_config = 'pg_catalog.english'
 # default postgresql.conf.  Note that these are directives, not variable
 # assignments, so they can usefully be given more than once.
 
-#include_dir = '...'			# include files ending in '.conf' from
+
+#include_dir = '@CONFIG_INCLUDE_DIR@'			# include files ending in '.conf' from
 					# a directory, e.g., 'conf.d'
 #include_if_exists = '...'		# include file only if it exists
 #include = '...'			# include file
