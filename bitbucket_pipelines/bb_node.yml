@@ -1,0 +1,91 @@
+image: node:14.19.0
+clone:
+  depth: 1
+definitions:
+  steps:
+    - step: &main
+        name: build and push to nexus
+        caches:
+          - node
+        script:
+          - BASE_VERSION_FILE=package.json
+          - NPMRC_FILE='.npmrc'
+          - NEXUS_URL=${NEXUS_UPLOAD_URL}/${REPO_NAME}
+          - export MAJOR_VER=`grep -i version ${BASE_VERSION_FILE}| cut -d\" -f4 | cut -d. -f1`
+          - export MINOR_VER=`grep -i version ${BASE_VERSION_FILE}| cut -d\" -f4 | cut -d. -f2`
+          - export BUILD_NO=${BITBUCKET_BUILD_NUMBER}
+          - set +e # turn off error-trapping
+          - git log -1 > temp_file
+          - grep -i major temp_file ;ret1="$?"
+          - grep -i minor temp_file ;ret2="$?"
+          - export FINAL=""
+          - set -e # turn on error-trapping
+          - if [ $ret1 -eq 0 ]; then
+          - MAJOR_VER=$((MAJOR_VER+1))
+          - elif [ $ret2 -eq 0 ]; then
+          - MINOR_VER=$((MINOR_VER+1))
+          - fi
+          - FINAL=$MAJOR_VER.$MINOR_VER.$BUILD_NO
+          - NEXUS_MOD_NAME=""
+          - sed -i -e 's@version.*@'"version\":\ \"${FINAL}\"."'@' $BASE_VERSION_FILE
+          - cat ${BASE_VERSION_FILE}
+          - ## update .npmrc file 
+          - AUTH_TOKEN=`echo -n "${NEXUS_USERNAME}:${NEXUS_PASSWORD}" | openssl base64`
+          - echo "_auth=${AUTH_TOKEN}" > $NPMRC_FILE
+          - echo "registry=$PUBLIC_NPM_REPO" >> $NPMRC_FILE
+          - echo "@iot83:registry=$NEXUS_URL" >> $NPMRC_FILE
+          - cat $NPMRC_FILE
+          - #this logic is crude, can be improved
+          - COMMON_MODS="button83 header83 footer83 table83 form83 "
+          - export MODS_NAME=$COMMON_MODS`ls packages | grep -v button83 | grep -v header83 | grep -v footer83 | grep -v table83 | grep -v form83`
+          - #this logic is crude, can be improved
+          - for MOD_NAME in $MODS_NAME; do
+          - echo " === Building $MOD_NAME === "
+          - cp ${NPMRC_FILE} packages/${MOD_NAME}
+          - # update package.json file
+          - sed -i -e 's@version.*@'"version\":\ \"${FINAL}\","'@' packages/${MOD_NAME}/$BASE_VERSION_FILE
+          - NEXUS_MOD_NAME=`grep name packages/${MOD_NAME}/$BASE_VERSION_FILE | cut -d\" -f4`
+          - if [ $BITBUCKET_BRANCH == develop ]; then
+          - echo $NEXUS_MOD_NAME
+          - sed -i -e 's#name.*#'"name\":\ \"${NEXUS_MOD_NAME}-SNAPSHOT\","'#' packages/${MOD_NAME}/$BASE_VERSION_FILE
+          - fi
+          - #update the dependencies versions with current one
+          - INTRY=""
+          - 'DEP_LINE=`grep -n dependencies packages/${MOD_NAME}/$BASE_VERSION_FILE | cut -d: -f 1`'
+          - for DEP in `tail -n +${DEP_LINE} packages/${MOD_NAME}/$BASE_VERSION_FILE |  grep iot83`; do
+          - echo $DEP
+          - ENTRY=`echo $DEP | cut -d\" -f2`
+          - echo $ENTRY
+          - if [[ "$ENTRY" == *"iot83"* ]]; then
+          - INTRY=${ENTRY}
+          - sed -i -e 's#'"${ENTRY}"'.*#'"${ENTRY}\":\ \"^${FINAL}\","'#' packages/${MOD_NAME}/$BASE_VERSION_FILE
+          - fi
+          - done
+          - # hotfix - replace last find with one without comma
+          - if [[ "$INTRY" == *"iot83"* ]]; then
+          - sed -i -e 's#'"${INTRY}"'.*#'"${INTRY}\":\ \"^${FINAL}\""'#' packages/${MOD_NAME}/$BASE_VERSION_FILE
+          - fi
+          - cat packages/${MOD_NAME}/${BASE_VERSION_FILE}
+          - cd packages/${MOD_NAME}
+          - set +e # turn off error-trapping
+          - cp src/*.css .
+          - set -e
+          - npm i  
+          - npm run build
+          - npm publish --registry=${NEXUS_URL}
+          - #revert the name as original one - this will not go in commit
+          - sed -i -e 's#name.*#'"name\":\ \"${NEXUS_MOD_NAME}\","'#' $BASE_VERSION_FILE
+          - git add $BASE_VERSION_FILE
+          - cd -
+          - done
+          - git add $BASE_VERSION_FILE
+          - git commit -m "pipeline tag:\ v${FINAL}${BITBUCKET_BRANCH} [skip ci]"
+          - git push origin
+          - git tag v${FINAL}${BITBUCKET_BRANCH}
+          - git push origin v${FINAL}${BITBUCKET_BRANCH}
+pipelines:
+  branches:
+    main:
+      - step: *main
+    develop:
+      - step: *main

@@ -1,0 +1,43 @@
+image: gradle:7.5.1-jdk18
+clone:
+  depth: 1
+definitions:
+  steps:
+    - step: &dev
+        name: Code build and publish
+        caches:
+          - gradle
+        script:
+          - set +x
+          - export NEXUS_MOD_NAME=flex83-libs-core-be
+          - export MODS_NAME="flex83-be-common-core flex83-be-consul-core flex83-be-aws-core flex83-be-mongo-core flex83-be-mysql-core flex83-be-connector-core flex83-be-pubsub-core"
+          - export GRADLE_FILE=gradle.properties
+          - export NEXUS_NAME=nexus
+          - export MAJOR_VER=`grep version gradle.properties | cut -d= -f2 | cut -d. -f1`
+          - export MINOR_VER=`grep version gradle.properties | cut -d= -f2 | cut -d. -f2`
+          - export BUILD_NO=`grep version gradle.properties | cut -d= -f2 | cut -d. -f3 | cut -d- -f1`
+          - export BUILD_TYPE=""
+          - echo $BITBUCKET_BRANCH
+          - env
+          - if [ $BITBUCKET_BRANCH == main ]; then
+          -      BUILD_TYPE=RELEASE
+          - else 
+          -      BUILD_TYPE=SNAPSHOT
+          - fi
+          - sed -i -e 's@version.*@'"version=$MAJOR_VER.$MINOR_VER.${BITBUCKET_BUILD_NUMBER}-${BUILD_TYPE}"'@' $GRADLE_FILE
+          - sed -i -e 's@VAR_NEXUS_URL@'"$REPO_URL/$NEXUS_MOD_NAME"'@' $GRADLE_FILE
+          - sed -i -e 's@VAR_NEXUS_UESRNAME@'"$NEXUS_USERNAME"'@' $GRADLE_FILE
+          - sed -i -e 's@VAR_NEXUS_PASSWORD@'"$NEXUS_PASSWORD"'@' $GRADLE_FILE
+          - sed -i -e 's@VAR_NEXUS_NAME@'"$NEXUS_NAME"'@' $GRADLE_FILE
+          - cat $GRADLE_FILE
+          - for MOD_NAME in $MODS_NAME; do
+          - echo " === Building $MOD_NAME === "
+          - gradle $MOD_NAME:build
+          - done
+          - gradle publish
+pipelines:
+  branches:
+    main:
+      - step: *dev
+    develop:
+      - step: *dev
