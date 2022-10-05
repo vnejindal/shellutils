@@ -1,0 +1,38 @@
+image: maven:3.8.6-amazoncorretto-17
+clone:
+  depth: 1
+definitions:
+  steps:
+    - step: &build_publish_artifact
+        name: Artifact Build and Publish
+        caches:
+          - maven
+        script:
+          - mvn --version
+          - yum install wget -y
+          - # create Settings.xml
+          - SETTINGS_FILE="src/main/resources/settings.xml"
+          - REMOTE_REPO=app-dmat-vz-data-analyzer
+          - cp $SETTINGS_FILE . 
+          - sed -i -e 's|NEXUS_USER|'"$NEXUS_USER"'|' settings.xml
+          - # '|' should not be part of password, if it is , then sed keyword should be changed
+          - sed -i -e 's|NEXUS_PASSWORD|'"$NEXUS_PASSWORD"'|' settings.xml
+          - cat /usr/share/maven/conf/settings.xml
+          - cp settings.xml /usr/share/maven/conf/settings.xml
+          - mvn clean deploy
+    - step: &remote_pipeline_trigger
+        name: triggering remote pipeline
+        script:
+          - REMOTE_REPO=app-dmat-vz-data-analyzer
+          - pipe: atlassian/trigger-pipeline:5.0.1
+            variables:
+              BITBUCKET_USERNAME: $BITBUCKET_USERNAME
+              BITBUCKET_APP_PASSWORD: $BITBUCKET_APP_PASSWORD
+              REPOSITORY: $REMOTE_REPO
+              REF_TYPE: 'branch'
+              REF_NAME: 'main' 
+pipelines:
+  branches:
+    main:
+      - step: *build_publish_artifact
+      - step: *remote_pipeline_trigger

@@ -1,0 +1,42 @@
+options:
+  docker: true
+  size: 2x
+clone:
+  depth: 1
+definitions:
+  steps:
+    - step: &update_gradle
+        name: update gradle file
+        caches:
+          - docker
+        script:
+          - apt-get update -qq
+          - apt-get install -y libxml2-utils
+          - GRADLE_FILE='build.gradle'
+          - NEXUS_REPO_URL=${NEXUS_UPLOAD_URL}
+          - #change this var for correct nexus xml path
+          - NEXUS_MAVEN_FILE='1.0-SNAPSHOT/maven-metadata.xml'
+          - PARSER_VER=`curl -u "${NEXUS_USERNAME}:${NEXUS_PASSWORD}" -s ${NEXUS_REPO_URL}/${NEXUS_MAVEN_FILE}| xmllint --xpath "string(//value)" -`
+          - echo $PARSER_VER
+          - export DEP_ONE_PARSER="    implementation 'testpackage:${PARSER_VER}:shaded@jar'"
+          - sed -i -e 's#.*OneParserSpark.*#'"$DEP_ONE_PARSER"'#' $GRADLE_FILE
+          - set +e
+          - git add $GRADLE_FILE
+          - git commit -m "pipeline change:\ Oneparser ver:${PARSER_VER} [skip ci]"
+          - git push origin
+          - set -e
+    - step: &build_image
+        name: Docker Image Build and Push
+        caches:
+          - gradle
+        script:
+          - export DOCKER_BUILDKIT=1
+          - docker login -u $DOCKERHUB_USERNAME -p $DOCKERHUB_PASSWORD
+          - docker build -t $DOCKERHUB_ORGANIZATION/spark-analyzer-vz:v2.0 .
+          - docker push $DOCKERHUB_ORGANIZATION/spark-analyzer-vz:v2.0
+              
+pipelines:
+  branches:
+    main:
+      - step: *update_gradle
+      - step: *build_image
