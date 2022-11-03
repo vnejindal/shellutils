@@ -1,0 +1,6 @@
+
+-- connect to a server as client 
+openssl s_client -connect  <ssl server ip>:<port> -CAfile ca.crt
+
+-- verify if a cert is signed by CA
+openssl verify -CAfile ca.crt client.crt
