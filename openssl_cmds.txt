@@ -4,3 +4,6 @@ openssl s_client -connect  <ssl server ip>:<port> -CAfile ca.crt
 
 -- verify if a cert is signed by CA
 openssl verify -CAfile ca.crt client.crt
+
+-- view a openssl cert in text format 
+openssl x509 -in ca.crt -text
