@@ -1,0 +1,40 @@
+options:
+  docker: true
+  size: 2x
+
+definitions:
+  services:
+    docker:
+      memory: 7128
+  steps:
+    - step: &prod
+        name: Docker Image Build and Push
+        caches:
+          - gradle
+        script:
+          - echo 'prod branch step'
+    - step: &main
+        name: Docker Image Build and Push
+        caches:
+          - gradle
+        script:
+          - echo 'main branch step'
+pipelines:
+  branches:
+    production:
+      - step: *prod
+    main:
+      - step: *main
+  custom: 
+    scan: 
+      - step:
+          script:
+          - wget https://customised-bitbucket-scan.s3.us-west-2.amazonaws.com/pythonProjects.config
+          - mv pythonProjects.config vnewhitesource.config
+          - sed -i s/projectName=.*/projectName=${BITBUCKET_REPO_SLUG}/g whitesource.config
+          - sed -i s/productName=.*/productName=ProjectName/g whitesource.config
+          - sed -i s/saas/app/g whitesource.config
+          - pipe: WhiteSourceSoftware/whitesource-scan:1.5.0
+            variables:
+              API_KEY: $WS_SCAN_API_KEY
+              CONFIG_FILE_PATH: ./vnewhitesource.config
