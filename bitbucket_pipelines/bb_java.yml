@@ -1,43 +1,216 @@
-image: gradle:7.5.1-jdk18
 clone:
-  depth: 1
+  depth: 10
+options:
+  docker: true
+  size: 2x
 definitions:
   steps:
-    - step: &dev
-        name: Code build and publish
+    - step: &check_style
+        name: Check Style Report
+        script:
+          - pipe: atlassian/checkstyle-report:0.3.0
+    - step: &secret_scan
+        name: Scan for Secrets
+        script:
+          - pipe: atlassian/git-secrets-scan:0.5.1
+    - step: &build_image_and_tag
+        name: Docker Image Build and Push Tag
+        image: gradle:7.6.0-jdk17
         caches:
           - gradle
         script:
-          - set +x
-          - export NEXUS_MOD_NAME=flex83-libs-core-be
-          - export MODS_NAME="flex83-be-common-core flex83-be-consul-core flex83-be-aws-core flex83-be-mongo-core flex83-be-mysql-core flex83-be-connector-core flex83-be-pubsub-core"
+          - git remote set-url origin ${BITBUCKET_GIT_SSH_ORIGIN}
+          - echo $PRIVATE_KEY > ~/.ssh/id_rsa.tmp
+          - base64 -d ~/.ssh/id_rsa.tmp > ~/.ssh/id_rsa
+          - chmod 600 ~/.ssh/id_rsa
+          - git config user.name "$BITBUCKET_USER"
+          - git config user.email "$BITBUCKET_EMAIL"        
+          - export REPO_URL=${VNE_UPLOAD_URL}
+          - export VNE_NAME=nexus
+          - export VNE_MOD_NAME=<VNE_MODULE_NAME>
+          - cp gradle.properties.template gradle.properties
           - export GRADLE_FILE=gradle.properties
-          - export NEXUS_NAME=nexus
-          - export MAJOR_VER=`grep version gradle.properties | cut -d= -f2 | cut -d. -f1`
-          - export MINOR_VER=`grep version gradle.properties | cut -d= -f2 | cut -d. -f2`
-          - export BUILD_NO=`grep version gradle.properties | cut -d= -f2 | cut -d. -f3 | cut -d- -f1`
-          - export BUILD_TYPE=""
-          - echo $BITBUCKET_BRANCH
-          - env
-          - if [ $BITBUCKET_BRANCH == main ]; then
-          -      BUILD_TYPE=RELEASE
-          - else 
-          -      BUILD_TYPE=SNAPSHOT
-          - fi
-          - sed -i -e 's@version.*@'"version=$MAJOR_VER.$MINOR_VER.${BITBUCKET_BUILD_NUMBER}-${BUILD_TYPE}"'@' $GRADLE_FILE
-          - sed -i -e 's@VAR_NEXUS_URL@'"$REPO_URL/$NEXUS_MOD_NAME"'@' $GRADLE_FILE
-          - sed -i -e 's@VAR_NEXUS_UESRNAME@'"$NEXUS_USERNAME"'@' $GRADLE_FILE
-          - sed -i -e 's@VAR_NEXUS_PASSWORD@'"$NEXUS_PASSWORD"'@' $GRADLE_FILE
-          - sed -i -e 's@VAR_NEXUS_NAME@'"$NEXUS_NAME"'@' $GRADLE_FILE
-          - cat $GRADLE_FILE
-          - for MOD_NAME in $MODS_NAME; do
-          - echo " === Building $MOD_NAME === "
-          - gradle $MOD_NAME:build
-          - done
-          - gradle publish
+          - sed -i -e 's@VAR_VNE_URL@'"$REPO_URL/$VNE_MOD_NAME"'@' $GRADLE_FILE
+          - sed -i -e 's@VAR_VNE_USERNAME@'"$VNE_USERNAME"'@' $GRADLE_FILE
+          - sed -i -e 's@VAR_VNE_PASSWORD@'"$VNE_PASSWORD"'@' $GRADLE_FILE
+          - sed -i -e 's@VAR_VNE_NAME@'"$VNE_NAME"'@' $GRADLE_FILE
+          - export DOCKER_BUILDKIT=1
+          - export COMMIT_MESSAGE=`git log --format=%B -n 1 $BITBUCKET_COMMIT`
+          - if [[ "$COMMIT_MESSAGE" == *"major"* ]]; then gradle releaseVersion majorVersionUpdate; elif [[ "$COMMIT_MESSAGE" == *"minor"* ]]; then gradle releaseVersion minorVersionUpdate; else gradle releaseVersion patchVersionUpdate; fi
+          - export version=`cat version.properties | grep "major" | cut -c 7-`.`cat version.properties | grep "minor" | cut -c 7-`.`cat version.properties | grep "patch" | cut -c 7-`
+          - echo $version > build_version.txt
+          - echo $BUILD_VERSION
+          - docker build -t $DOCKERHUB_ORGANIZATION/${BITBUCKET_REPO_SLUG}:$version .
+          - docker login -u $DOCKERHUB_USERNAME -p $DOCKERHUB_PASSWORD
+          - docker push $DOCKERHUB_ORGANIZATION/${BITBUCKET_REPO_SLUG}:$version
+          - git add version.properties && git commit -m "[skip ci]" && git push
+          - git tag -am "Creating Tag for ${version}" ${version} && git push origin ${version}
+        artifacts:
+          - build_version.txt
+    - step: &prepare_build_for_release
+        name: Prepare Docker Image for Release
+        image: gradle:7.6.0-jdk17
+        caches:
+          - gradle
+        script:
+          - export REPO_URL=${VNE_UPLOAD_URL}
+          - export VNE_NAME=nexus
+          - export VNE_MOD_NAME=<VNE_MOD_NAME>
+          - cp gradle.properties.template gradle.properties
+          - export GRADLE_FILE=gradle.properties
+          - sed -i -e 's@VAR_VNE_URL@'"$REPO_URL/$VNE_MOD_NAME"'@' $GRADLE_FILE
+          - sed -i -e 's@VAR_VNE_USERNAME@'"$VNE_USERNAME"'@' $GRADLE_FILE
+          - sed -i -e 's@VAR_VNE_PASSWORD@'"$VNE_PASSWORD"'@' $GRADLE_FILE
+          - sed -i -e 's@VAR_VNE_NAME@'"$VNE_NAME"'@' $GRADLE_FILE
+          - export DOCKER_BUILDKIT=1
+          - export rel_ver=${BITBUCKET_BRANCH:8}
+          - export version_prefix=${rel_ver:0:1}
+          - export version=rc-$(date '+'$version_prefix'.%m.%d-'${BITBUCKET_BUILD_NUMBER})
+          - docker build -t $DOCKERHUB_ORGANIZATION/${BITBUCKET_REPO_SLUG}:$version .
+          - docker login -u $DOCKERHUB_USERNAME -p $DOCKERHUB_PASSWORD
+          - docker push $DOCKERHUB_ORGANIZATION/${BITBUCKET_REPO_SLUG}:$version
+          - git tag -am "Creating Release Tag for ${version}" ${version} && git push origin ${version}
+          - echo $version > build_version.txt
+    - step: &run_mend_scan
+        name: Run Mend Scan
+        image: gradle:7.6.0-jdk17
+        size: 2x
+        memory: 7128
+        script:
+          - export REPO_URL=${VNE_UPLOAD_URL}
+          - export VNE_NAME=nexus
+          - cp gradle.properties.template gradle.properties
+          - export GRADLE_FILE=gradle.properties
+          - sed -i -e 's@VAR_VNE_URL@'"$REPO_URL/$VNE_MOD_NAME"'@' $GRADLE_FILE
+          - sed -i -e 's@VAR_VNE_USERNAME@'"$VNE_USERNAME"'@' $GRADLE_FILE
+          - sed -i -e 's@VAR_VNE_PASSWORD@'"$VNE_PASSWORD"'@' $GRADLE_FILE
+          - sed -i -e 's@VAR_VNE_NAME@'"$VNE_NAME"'@' $GRADLE_FILE
+          - wget $WS_CFG_FILE_GRADLE
+          - wget https://unified-agent.s3.amazonaws.com/wss-unified-agent.jar
+          - mv gradleProjects.config whitesource.config
+          - sed -i s/projectName=.*/projectName=${BITBUCKET_REPO_SLUG}/g whitesource.config
+          - sed -i s/apiKey=.*/apiKey=${WS_SCAN_API_KEY}/g whitesource.config
+          - sed -i s/productName=.*/productName=Flex83-V6-New/g whitesource.config
+          - sed -i s/saas/app/g whitesource.config
+          - gradle clean build
+          - export version=`cat version.properties | grep "major" | cut -c 7-`.`cat version.properties | grep "minor" | cut -c 7-`.`cat version.properties | grep "patch" | cut -c 7-`
+          - java -jar wss-unified-agent.jar -c whitesource.config -appPath build/libs/${BITBUCKET_REPO_SLUG}-$version.jar -d /opt/atlassian/pipelines/agent/build -euaMode 1
+    - step:
+        name: Check Quality Gate on SonarQube
+        max-time: 5
+        script:
+          - pipe: sonarsource/sonarqube-quality-gate:1.1.0
+            variables:
+              SONAR_TOKEN: {SC_TOKEN: ''}
+    - step: &update_helm_package
+        name: Update Helm Package
+        script:
+          - export BUILD_VERSION=$(cat $BITBUCKET_CLONE_DIR/build_version.txt)
+          - git config --global user.email "$BITBUCKET_EMAIL"
+          - git config --global user.name "$BITBUCKET_USER"
+          - git clone --depth 10 <REPO_URL>
+          - apt-get update &&  apt-get install wget -y && wget https://github.com/mikefarah/yq/releases/download/v4.9.6/yq_linux_386 -O /usr/bin/yq && chmod +x /usr/bin/yq
+          - yq eval '.appVersion = env(BUILD_VERSION)' Chart.yaml -i
+          - git add Chart.yaml
+          - git commit -m "Update image tag for ${BITBUCKET_REPO_SLUG} to $BUILD_VERSION"
+          - export LATEST_COMMIT_MESSAGE=$(git log -1 --pretty=%B)
+          - git push origin $BITBUCKET_BRANCH
+    - step: &update_helm_package_for_release_candidate
+        name: Update Helm Package For Release
+        script:
+          - export BUILD_VERSION=$(cat $BITBUCKET_CLONE_DIR/build_version.txt)
+          - git config --global user.email "$BITBUCKET_EMAIL"
+          - git config --global user.name "$BITBUCKET_USER"
+          - git clone --branch --depth 10 $BITBUCKET_BRANCH <VNE_REPO_NAME>
+          - apt-get update &&  apt-get install wget -y && wget https://github.com/mikefarah/yq/releases/download/v4.9.6/yq_linux_386 -O /usr/bin/yq && chmod +x /usr/bin/yq
+          - yq eval '.appVersion = env(BUILD_VERSION)' Chart.yaml -i
+          - git add Chart.yaml
+          - git commit -m "Update image tag for rc ${BITBUCKET_REPO_SLUG} to $BUILD_VERSION"
+          - export LATEST_COMMIT_MESSAGE=$(git log -1 --pretty=%B)
+          - git push origin $BITBUCKET_BRANCH
+    - step: &run_sonar_cube_analysis
+        size: 2x
+        memory: 7128
+        name: SonarQube Analysis
+        script:
+          - pipe: sonarsource/sonarqube-scan:1.1.0
+            variables:
+              SONAR_HOST_URL: ${SC_HOST}
+              SONAR_TOKEN: ${SC_TOKEN}
+              SONAR_PROJECTKEY: ${BITBUCKET_REPO_SLUG}
+    - step: &run_quality_gate_on_sonar_cube
+        size: 2x
+        memory: 7128
+        name: Check Quality Gate on SonarQube
+        max-time: 5
+        script:
+          - pipe: sonarsource/sonarqube-quality-gate:1.1.0
+            variables:
+              SONAR_TOKEN: ${SC_TOKEN}
+    - step: &tag_release_candidate
+        name: Re-tag a Release Candidate for Release (Git and Docker)
+        clone:
+          depth: 'full'
+        script:
+          - export rel=${Tag:3}
+          - export version=rel-${rel}
+          - docker login -u $DOCKERHUB_USERNAME -p $DOCKERHUB_PASSWORD
+          - docker pull $DOCKERHUB_ORGANIZATION/${BITBUCKET_REPO_SLUG}:$Tag
+          - docker tag $DOCKERHUB_ORGANIZATION/${BITBUCKET_REPO_SLUG}:$Tag $DOCKERHUB_ORGANIZATION/${BITBUCKET_REPO_SLUG}:$version
+          - docker push $DOCKERHUB_ORGANIZATION/${BITBUCKET_REPO_SLUG}:$version
+          - git tag ${version} ${Tag}
+          - git push origin ${version}
+          - echo $version > build_version.txt
+    - step: &build_code
+        name: Build Code for any Branch (feature/hotfix/bugfix)
+        image: gradle:7.6.0-jdk17
+        caches:
+          - gradle
+        script:
+          - export REPO_URL=${VNE_UPLOAD_URL}
+          - export VNE_NAME=nexus
+          - export VNE_MOD_NAME=<VNE_MOD_NAME>
+          - cp gradle.properties.template gradle.properties
+          - export GRADLE_FILE=gradle.properties
+          - sed -i -e 's@VAR_VNE_URL@'"$REPO_URL/$VNE_MOD_NAME"'@' $GRADLE_FILE
+          - sed -i -e 's@VAR_VNE_USERNAME@'"$VNE_USERNAME"'@' $GRADLE_FILE
+          - sed -i -e 's@VAR_VNE_PASSWORD@'"$VNE_PASSWORD"'@' $GRADLE_FILE
+          - sed -i -e 's@VAR_VNE_NAME@'"$VNE_NAME"'@' $GRADLE_FILE
+          - export DOCKER_BUILDKIT=1
+          - docker build -t $DOCKERHUB_ORGANIZATION/${BITBUCKET_REPO_SLUG}:latest .
 pipelines:
   branches:
+    feature/*:
+      - step: *check_style
+      - step: *secret_scan
+      - step: *run_sonar_cube_analysis
+      - step: *run_quality_gate_on_sonar_cube
+      - step: *build_code
+    bugfix/*:
+      - step: *check_style
+      - step: *secret_scan
+      - step: *run_sonar_cube_analysis
+      - step: *run_quality_gate_on_sonar_cube
+      - step: *build_code
+    hotfix/*:
+      - step: *check_style
+      - step: *secret_scan
+      - step: *run_sonar_cube_analysis
+      - step: *run_quality_gate_on_sonar_cube
+      - step: *build_code
+    release/*:
+      - step: *prepare_build_for_release
+      - step: *update_helm_package_for_release_candidate
     main:
-      - step: *dev
-    develop:
-      - step: *dev
+      - step: *build_image_and_tag
+      - step: *update_helm_package
+  custom:
+    MEND:
+      - step: *run_mend_scan
+    SONARCUBE:
+      - step: *run_sonar_cube_analysis
+      - step: *run_quality_gate_on_sonar_cube
+    RELEASE:
+      - variables:
+          - name: Tag
+      - step: *tag_release_candidate
